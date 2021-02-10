@@ -1,8 +1,7 @@
 """
 Multi Channels VAE (MCVAE)
 ==========================
-
-Credit: A Grigis
+Credit: A Grigis & C. Ambroise
 """
 
 # Imports
@@ -30,7 +29,6 @@ from mcvae.models import Mcvae, VAE
 
 
 # Global parameters
-setup_logging(level="info")
 n_samples = 500
 n_channels = 3
 n_feats = 4
@@ -39,6 +37,8 @@ fit_lat_dims = 5
 snr = 10
 adam_lr = 2e-3
 epochs = 5000
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+setup_logging(level="info")
 
 
 # Create synthetic data
@@ -47,12 +47,9 @@ epochs = 5000
 class GeneratorUniform(nn.Module):
     """ Generate multiple sources (channels) of data through a linear
     generative model:
-
     z ~ N(0,I)
-
     for c_idx in n_channels:
         x_ch = W_ch(c_idx)
-
     where 'W_ch' is an arbitrary linear mapping z -> x_ch
     """
     def __init__(self, lat_dim=2, n_channels=2, n_feats=5, seed=100):
@@ -157,7 +154,6 @@ print("- datasets:", image_datasets)
 models = {}
 torch.manual_seed(42)
 vae_kwargs = {}
-#     "hidden_dims": [10]}
 models["mcvae"] = MCVAE(
     latent_dim=fit_lat_dims, n_channels=n_channels,
     n_feats=[n_feats] * n_channels, vae_model="dense", vae_kwargs=vae_kwargs)
@@ -171,7 +167,7 @@ print("- models:", models)
 
 # Fit models
 
-def train_model(model, dataloaders, criterion, optimizer,# scheduler,
+def train_model(model, dataloaders, criterion, optimizer, scheduler=None,
                 num_epochs=25):
     # Parameters
     model = model.to(device)
@@ -206,9 +202,9 @@ def train_model(model, dataloaders, criterion, optimizer,# scheduler,
                 with torch.set_grad_enabled(phase == "train"):
                     fwd_ret = model(inputs)
                     losses = criterion(fwd_ret, inputs)
-                    loss = losses['total']
-                    kl = losses['kl']
-                    ll = losses['ll']
+                    loss = losses["total"]
+                    kl = losses["kl"]
+                    ll = losses["ll"]
 
 
                     # backward + optimize only if in training phase
@@ -228,12 +224,15 @@ def train_model(model, dataloaders, criterion, optimizer,# scheduler,
             epoch_ll = running_ll / len(dataloaders[phase].dataset)
 
             # Update scheduler
-            # if phase == "train":
-            #     scheduler.step(epoch_loss)
+            if scheduler is not None and phase == "train":
+                scheduler.step(epoch_loss)
 
+            # Display info
             if epoch % 10 == 0:
-                print("===> {}: epoch {}/{},\t Loss: {:.4f},\t KL: {:.4f},\t LL: {:.4f}".format(
-                    phase, epoch, num_epochs - 1, epoch_loss, epoch_kl, epoch_ll))
+                print("===> {}: epoch {}/{},\t Loss: {:.4f},\t KL: {:.4f},\t "
+                      "LL: {:.4f}".format(
+                            phase, epoch, num_epochs - 1, epoch_loss, epoch_kl,
+                            epoch_ll))
 
             # Save weights of the best model
             if phase == "val" and epoch_loss < best_loss:
@@ -245,7 +244,7 @@ def train_model(model, dataloaders, criterion, optimizer,# scheduler,
         time_elapsed // 60, time_elapsed % 60))
 
     # Load best model weights
-    if 'val' in image_datasets.keys():
+    if "val" in image_datasets.keys():
         model.load_state_dict(best_model_wts)
 
     return model
@@ -256,16 +255,15 @@ dataloaders = {
         image_datasets[x], batch_size=n_samples, shuffle=True, num_workers=0)
               for x in image_datasets.keys()}
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 for model_name, model in models.items():
     
     print("- training:", model_name)
     criterion = MCVAELoss(model.n_channels, beta=1., sparse=model.sparse)
     optimizer = torch.optim.Adam(params=model.parameters(), lr=adam_lr)
-    # scheduler = lr_scheduler.ReduceLROnPlateau(optimizer)#, step_size=200, gamma=0.5)
+    # scheduler = lr_scheduler.ReduceLROnPlateau(optimizer)
     print(model)
-    train_model(model, dataloaders, criterion, optimizer,# scheduler,
+    train_model(model, dataloaders, criterion, optimizer, scheduler=None,
                 num_epochs=epochs)
 
 
@@ -273,11 +271,10 @@ for model_name, model in models.items():
 pred = {}  # Prediction
 z = {}     # Latent Space
 g = {}     # Generative Parameters
-x_hat = {}  # reconstructed channels
+x_hat = {}  # Reconstructed channels
 
-# print("Latent space ...")
 for model_name, model in models.items():
-    X = dataloaders['train']
+    X = dataloaders["train"]
 
     big_X = [[],[],[]]
     for x in X:
@@ -302,28 +299,31 @@ for model_name, model in models.items():
 
 
 """
-With such a simple dataset, mcvae and sparse-mcvae gives the same results in terms of
-latent space and generative parameters.
-However, only with the sparse model is possible to easily identify the important latent dimensions.
+With such a simple dataset, mcvae and sparse-mcvae gives the same results in
+terms of latent space and generative parameters.
+However, only with the sparse model is possible to easily identify the
+important latent dimensions.
 """
 plt.figure()
 plt.subplot(1,2,1)
-plt.hist([z['smcvae'], z['mcvae']], bins=20, color=['k', 'gray'])
-plt.legend(['Sarse', 'Non sparse'])
-plt.title(r'Latent dimensions distribution')
-plt.ylabel('Count')
-plt.xlabel('Value')
+plt.hist([z["smcvae"], z["mcvae"]], bins=20, color=["k", "gray"])
+plt.legend(["Sparse", "Non sparse"])
+plt.title("Latent dimensions distribution")
+plt.ylabel("Count")
+plt.xlabel("Value")
 plt.subplot(1,2,2)
-plt.hist([g['smcvae'], g['mcvae']], bins=20, color=['k', 'gray'])
-plt.legend(['Sparse', 'Non sparse'])
-plt.title(r'Generative parameters $\mathbf{\theta} = \{\mathbf{\theta}_1 \ldots \mathbf{\theta}_C\}$')
-plt.xlabel('Value')
+plt.hist([g["smcvae"], g["mcvae"]], bins=20, color=["k", "gray"])
+plt.legend(["Sparse", "Non sparse"])
+plt.title(r"Generative parameters $\mathbf{\theta} = \{\mathbf{\theta}_1 "
+           "\ldots \mathbf{\theta}_C\}$")
+plt.xlabel("Value")
 
-do = np.sort(models['smcvae'].dropout.detach().numpy().reshape(-1))
+do = np.sort(models["smcvae"].dropout.detach().numpy().reshape(-1))
 plt.figure()
 plt.bar(range(len(do)), do)
-plt.suptitle(f'Dropout probability of {fit_lat_dims} fitted latent dimensions in Sparse Model')
-plt.title(f'({true_lat_dims} true latent dimensions)')
+plt.suptitle("Dropout probability of {0} fitted latent dimensions in Sparse "
+             "Model".format(fit_lat_dims))
+plt.title("{0} true latent dimensions".format(true_lat_dims))
 
 plt.show()
 print("See you!")
